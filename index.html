@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DuckDB in the browser — LiveCodes POC</title>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --panel-2: #1c2230;
+    --border: #2a3140;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #f2c14e;
+    --accent-2: #4c8bf5;
+    --green: #3fb950;
+    --red: #f85149;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: radial-gradient(1200px 600px at 70% -10%, #1b2433 0%, var(--bg) 55%);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.5;
+    min-height: 100vh;
+    padding: 24px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+
+  header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand .duck { font-size: 34px; line-height: 1; filter: drop-shadow(0 2px 6px rgba(0,0,0,.5)); }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+  h1 .muted { font-weight: 400; }
+
+  .status {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 6px 12px; border-radius: 999px;
+    background: var(--panel); border: 1px solid var(--border);
+    font-size: 13px; color: var(--muted); font-family: var(--mono);
+  }
+  .status .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .status[data-state="loading"] .dot { background: var(--accent); animation: pulse 1.2s infinite ease-in-out; }
+  .status[data-state="ready"]   .dot { background: var(--green); }
+  .status[data-state="error"]   .dot { background: var(--red); }
+  .status[data-state="error"]   { color: #ffb4ae; border-color: #5a2a28; }
+  @keyframes pulse { 0%,100% { opacity: .35; } 50% { opacity: 1; } }
+
+  .lede { color: var(--muted); margin: 14px 0 18px; font-size: 14px; max-width: 78ch; }
+  .muted { color: var(--muted); }
+
+  .toolbar {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-bottom: none; border-radius: 12px 12px 0 0; padding: 10px 12px;
+  }
+  .toolbar label { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+  .spacer { flex: 1; }
+
+  select, button, textarea { font-family: inherit; color: inherit; }
+  select {
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+    border-radius: 8px; padding: 7px 10px; font-size: 13px; max-width: 46ch;
+  }
+  button {
+    background: var(--accent); color: #201a08; border: 1px solid transparent;
+    border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
+  }
+  button:hover:not(:disabled) { filter: brightness(1.06); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); font-weight: 500; }
+  button.ghost:hover { color: var(--text); }
+  .hint { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+
+  #editor {
+    width: 100%; min-height: 210px; resize: vertical;
+    background: #0b0f14; border: 1px solid var(--border); border-radius: 0 0 12px 12px;
+    padding: 14px 16px; font-family: var(--mono); font-size: 13.5px; line-height: 1.6;
+    tab-size: 2; outline: none;
+  }
+  #editor:focus { border-color: #3a4560; }
+
+  .output {
+    margin-top: 18px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 14px; min-height: 84px;
+  }
+  .meta { font-family: var(--mono); font-size: 12px; color: var(--muted); margin-bottom: 10px; }
+  .meta.error { color: #ffb4ae; }
+  .empty { color: var(--muted); font-size: 13px; margin: 6px 2px; }
+  .table-wrap { overflow: auto; max-height: 460px; border: 1px solid var(--border); border-radius: 8px; }
+  table { border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: 12.5px; }
+  th, td { text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  thead th { position: sticky; top: 0; background: var(--panel-2); z-index: 1; }
+  th .col-name { display: block; color: var(--text); font-weight: 600; }
+  th .col-type { display: block; color: var(--muted); font-weight: 400; font-size: 10.5px; margin-top: 2px; }
+  tbody tr:hover { background: rgba(76,139,245,.08); }
+  td.null { color: var(--muted); font-style: italic; }
+  td.num { text-align: right; }
+  pre.err {
+    margin: 0; padding: 12px; background: #1b1113; border: 1px solid #5a2a28; border-radius: 8px;
+    color: #ffb4ae; font-family: var(--mono); font-size: 12.5px; white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+
+  footer { color: var(--muted); font-size: 12px; margin-top: 20px; line-height: 1.7; }
+  footer code { font-family: var(--mono); background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <span class="duck" aria-hidden="true">🦆</span>
+      <h1>DuckDB <span class="muted">in your browser</span></h1>
+    </div>
+    <div class="status" id="status" data-state="loading" role="status" aria-live="polite">
+      <span class="dot" aria-hidden="true"></span><span id="status-text">Starting…</span>
+    </div>
+  </header>
+
+  <p class="lede">
+    Analytical SQL running entirely client-side — DuckDB compiled to WebAssembly, inside a Web Worker.
+    No backend, no SQL sent anywhere. <span class="muted">Proof of concept for DuckDB support in LiveCodes.</span>
+  </p>
+
+  <div class="toolbar">
+    <label for="examples">Examples</label>
+    <select id="examples" aria-label="Load an example"></select>
+    <span class="spacer"></span>
+    <button id="clear" class="ghost" type="button">Clear</button>
+    <button id="run" type="button" disabled>Run</button>
+    <span class="hint">Ctrl/⌘ + Enter</span>
+  </div>
+  <textarea id="editor" spellcheck="false" aria-label="SQL editor" placeholder="SELECT 1;"></textarea>
+
+  <section id="output" class="output" aria-live="polite">
+    <p class="empty">Initializing DuckDB…</p>
+  </section>
+
+  <footer>
+    Assets load from the jsDelivr CDN (<code>duckdb-wasm 1.32.0</code>); they are cacheable and can be self-hosted for offline use.
+    Browsers restrict Web Workers on <code>file://</code> URLs, so open this page over <code>http(s)</code> — any static host works.
+  </footer>
+</div>
+
+<script type="module">
+import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm';
+
+const DUCKDB_WASM_VERSION = '1.32.0';
+const MAX_ROWS = 1000;
+
+const els = {
+  status: document.getElementById('status'),
+  statusText: document.getElementById('status-text'),
+  editor: document.getElementById('editor'),
+  run: document.getElementById('run'),
+  clear: document.getElementById('clear'),
+  examples: document.getElementById('examples'),
+  output: document.getElementById('output'),
+};
+
+// Exposed to make automated smoke-testing easy.
+window.__poc = { state: 'starting', lastResult: null, error: null };
+
+let db = null;
+let conn = null;
+
+const SAMPLES = [
+  {
+    label: 'Basics — expressions & functions',
+    sql: `SELECT
+  42                               AS answer,
+  'DuckDB runs in your browser'    AS greeting,
+  round(sqrt(2), 6)                AS sqrt_2,
+  current_date                     AS today,
+  upper('wasm')                    AS shout;`,
+  },
+  {
+    label: 'Aggregation — 1,000,000 rows',
+    sql: `SELECT
+  i % 3            AS bucket,
+  count(*)         AS n,
+  round(avg(i), 2) AS mean,
+  sum(i)           AS total
+FROM range(1, 1000001) AS t(i)
+GROUP BY bucket
+ORDER BY bucket;`,
+  },
+  {
+    label: 'CSV — query a file in memory',
+    setup: () => db.registerFileText(
+      'cities.csv',
+      ['name,country,population',
+       'Tokyo,Japan,37400068',
+       'Delhi,India,29399141',
+       'Shanghai,China,26317104',
+       'Sao Paulo,Brazil,21846507',
+       'Mexico City,Mexico,21671908'].join('\n'),
+    ),
+    sql: `SELECT *
+FROM read_csv_auto('cities.csv')
+ORDER BY population DESC;`,
+  },
+  {
+    label: 'Parquet over HTTP — query a remote file (needs network)',
+    sql: `SELECT
+  country,
+  count(*)              AS users,
+  round(avg(salary), 0) AS avg_salary
+FROM read_parquet(
+  'https://raw.githubusercontent.com/duckdb/duckdb/main/data/parquet-testing/userdata1.parquet'
+)
+GROUP BY country
+ORDER BY users DESC
+LIMIT 10;`,
+  },
+];
+
+function setStatus(state, text) {
+  els.status.dataset.state = state;
+  els.statusText.textContent = text;
+  window.__poc.state = state;
+}
+
+function formatValue(value, typeString) {
+  if (value === null || value === undefined) return { text: 'NULL', cls: 'null' };
+  if (typeof value === 'bigint') return { text: value.toString(), cls: 'num' };
+  if (typeof value === 'number') {
+    if (/^(Date32|Date64|Timestamp)/.test(typeString)) {
+      const date = new Date(value);
+      if (!Number.isNaN(date.getTime())) {
+        return { text: typeString.startsWith('Date') ? date.toISOString().slice(0, 10) : date.toISOString() };
+      }
+    }
+    return { text: String(value), cls: 'num' };
+  }
+  if (typeof value === 'boolean') return { text: String(value) };
+  if (value instanceof Date) return { text: value.toISOString() };
+  if (typeof value === 'object') {
+    // Arrow returns wrapper objects (e.g. Decimal) with a meaningful toString().
+    const hasCustomToString = !Array.isArray(value)
+      && typeof value.toString === 'function'
+      && value.toString !== Object.prototype.toString;
+    let text;
+    if (hasCustomToString) {
+      text = String(value);
+    } else {
+      try {
+        text = JSON.stringify(value, (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
+      } catch {
+        text = String(value);
+      }
+    }
+    return { text, cls: /^-?\d+(\.\d+)?$/.test(text) ? 'num' : undefined };
+  }
+  return { text: String(value) };
+}
+
+function renderMeta(text, isError) {
+  const meta = document.createElement('div');
+  meta.className = isError ? 'meta error' : 'meta';
+  meta.textContent = text;
+  return meta;
+}
+
+function renderTable(table, ms) {
+  const fields = table.schema.fields;
+  const nCols = fields.length;
+  const nRows = table.numRows;
+  const columns = fields.map((_f, i) => table.getChildAt(i));
+  const typeNames = fields.map((f) => String(f.type));
+
+  els.output.replaceChildren();
+  els.output.append(renderMeta(
+    `${nRows.toLocaleString()} row${nRows === 1 ? '' : 's'} · ` +
+    `${nCols} column${nCols === 1 ? '' : 's'} · ${ms.toFixed(1)} ms`,
+    false,
+  ));
+
+  if (nCols === 0 || nRows === 0) {
+    const note = document.createElement('p');
+    note.className = 'empty';
+    note.textContent = nCols === 0 ? 'Statement executed (no result set).' : 'No rows returned.';
+    els.output.append(note);
+    return;
+  }
+
+  const shown = Math.min(nRows, MAX_ROWS);
+  const tableEl = document.createElement('table');
+
+  const thead = document.createElement('thead');
+  const headRow = document.createElement('tr');
+  for (let i = 0; i < nCols; i++) {
+    const th = document.createElement('th');
+    const name = document.createElement('span');
+    name.className = 'col-name';
+    name.textContent = fields[i].name;
+    const type = document.createElement('span');
+    type.className = 'col-type';
+    type.textContent = typeNames[i];
+    th.append(name, type);
+    headRow.append(th);
+  }
+  thead.append(headRow);
+  tableEl.append(thead);
+
+  const tbody = document.createElement('tbody');
+  for (let r = 0; r < shown; r++) {
+    const tr = document.createElement('tr');
+    for (let c = 0; c < nCols; c++) {
+      const cell = formatValue(columns[c] ? columns[c].get(r) : null, typeNames[c]);
+      const td = document.createElement('td');
+      if (cell.cls) td.className = cell.cls;
+      td.textContent = cell.text;
+      tr.append(td);
+    }
+    tbody.append(tr);
+  }
+  tableEl.append(tbody);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'table-wrap';
+  wrap.append(tableEl);
+  els.output.append(wrap);
+
+  if (nRows > shown) {
+    const note = document.createElement('p');
+    note.className = 'empty';
+    note.textContent = `Showing the first ${shown.toLocaleString()} of ${nRows.toLocaleString()} rows.`;
+    els.output.append(note);
+  }
+}
+
+function renderError(error, hint) {
+  els.output.replaceChildren();
+  els.output.append(renderMeta('Error', true));
+  const pre = document.createElement('pre');
+  pre.className = 'err';
+  pre.textContent = String(error && error.message ? error.message : error);
+  els.output.append(pre);
+  if (hint) {
+    const note = document.createElement('p');
+    note.className = 'empty';
+    note.textContent = hint;
+    els.output.append(note);
+  }
+}
+
+async function run() {
+  if (!conn) return;
+  const sql = els.editor.value.trim();
+  if (!sql) return;
+
+  els.run.disabled = true;
+  const started = performance.now();
+  try {
+    const table = await conn.query(sql);
+    const ms = performance.now() - started;
+    renderTable(table, ms);
+    window.__poc.lastResult = { rows: table.numRows, cols: table.schema.fields.length, ms };
+    window.__poc.error = null;
+  } catch (error) {
+    const ms = performance.now() - started;
+    console.error('[duckdb-poc]', error);
+    renderError(error);
+    window.__poc.lastResult = null;
+    window.__poc.error = String(error && error.message ? error.message : error);
+  } finally {
+    els.run.disabled = false;
+  }
+}
+
+async function loadSample(index) {
+  const sample = SAMPLES[index];
+  if (!sample) return;
+  els.editor.value = sample.sql;
+  if (!conn) return;
+  if (sample.setup) {
+    try {
+      await sample.setup();
+    } catch (error) {
+      console.error('[duckdb-poc]', error);
+      renderError(error, 'Could not prepare the sample data.');
+      return;
+    }
+  }
+  if (els.examples.value !== String(index)) els.examples.value = String(index);
+  await run();
+}
+
+async function start() {
+  try {
+    setStatus('loading', 'Downloading DuckDB (WebAssembly)…');
+    const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
+
+    setStatus('loading', 'Starting worker…');
+    const workerUrl = URL.createObjectURL(
+      new Blob([`importScripts("${bundle.mainWorker}");`], { type: 'text/javascript' }),
+    );
+    const worker = new Worker(workerUrl);
+    worker.onerror = (event) => setStatus('error', `Worker error: ${event.message || 'unknown'}`);
+
+    db = new duckdb.AsyncDuckDB(new duckdb.ConsoleLogger(), worker);
+    await db.instantiate(bundle.mainModule, bundle.pthreadWorker ?? null);
+    URL.revokeObjectURL(workerUrl);
+
+    conn = await db.connect();
+    window.__poc.conn = conn;
+
+    let engine = 'unknown';
+    try {
+      engine = (await conn.query('SELECT version() AS v')).toArray()[0].v;
+    } catch { /* non-fatal */ }
+
+    setStatus('ready', `Ready · DuckDB ${engine} · duckdb-wasm ${DUCKDB_WASM_VERSION}`);
+    els.run.disabled = false;
+    await loadSample(0);
+  } catch (error) {
+    console.error('[duckdb-poc]', error);
+    setStatus('error', `Failed to start: ${error && error.message ? error.message : error}`);
+    els.output.replaceChildren();
+    renderError(error,
+      'Could not initialize DuckDB. Check your network connection to the CDN and the browser console. ' +
+      'If you opened this file directly (file://), serve it over http(s) instead — Web Workers are blocked on file:// URLs.');
+  }
+}
+
+SAMPLES.forEach((sample, index) => {
+  const option = document.createElement('option');
+  option.value = String(index);
+  option.textContent = sample.label;
+  els.examples.append(option);
+});
+
+els.examples.addEventListener('change', () => loadSample(Number(els.examples.value)));
+els.run.addEventListener('click', run);
+els.clear.addEventListener('click', () => {
+  els.editor.value = '';
+  els.output.replaceChildren();
+  const note = document.createElement('p');
+  note.className = 'empty';
+  note.textContent = 'Editor cleared. Write some SQL and press Run.';
+  els.output.append(note);
+  els.editor.focus();
+});
+els.editor.addEventListener('keydown', (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+    event.preventDefault();
+    run();
+  }
+});
+
+els.editor.value = SAMPLES[0].sql;
+start();
+</script>
+</body>
+</html>
